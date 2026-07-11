@@ -9,12 +9,11 @@ once** and every caller repo picks it up.
 | Reusable workflow | Purpose |
 | --- | --- |
 | [`js-ci.yml`](.github/workflows/js-ci.yml) | JS/TS CI — lint / typecheck / test / build (auto-detected) + a **nox** security scan with self-adjusting baseline gate. |
+| [`go-ci.yml`](.github/workflows/go-ci.yml) | Go CI — gofmt / golangci-lint / race tests / optional coverage gate + a **nox** scan with taint SAST (cosign-verified plugin). |
 | [`nox-remediate.yml`](.github/workflows/nox-remediate.yml) | **Replaces dependabot.** Weekly + on-demand OSV dependency upgrades and GitHub Actions pin bumps, opened as one auto-merged PR. |
 
 Caller templates: [`nox-remediate-caller-example.yml`](.github/workflows/nox-remediate-caller-example.yml),
 [`js-ci-caller-example.yml`](.github/workflows/js-ci-caller-example.yml).
-
-> A `go-ci.yml` reusable will be added when the rollout reaches the Go repos.
 
 ## The model
 
