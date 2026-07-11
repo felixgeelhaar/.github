@@ -1,0 +1,28 @@
+# EXAMPLE caller — copy to a Node repo as .github/workflows/ci.yml.
+# For repos that don't already have a richer bespoke CI. Repos with extra
+# required jobs (E2E, CodeQL, cross-platform) keep their own ci.yml and only
+# adopt nox-remediate.yml separately.
+name: CI
+
+on:
+  push:
+    branches: [main]
+    paths-ignore: ["**.md", "docs/**", "LICENSE", ".gitignore"]
+  pull_request:
+    branches: [main]
+    paths-ignore: ["**.md", "docs/**", "LICENSE", ".gitignore"]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ci:
+    uses: felixgeelhaar/.github/.github/workflows/js-ci.yml@main
+    permissions:
+      contents: read
+      security-events: write
+      pull-requests: write
+    secrets: inherit
+    with:
+      package-manager: npm # npm (default) | pnpm | yarn
