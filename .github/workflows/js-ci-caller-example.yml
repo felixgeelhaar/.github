@@ -2,15 +2,24 @@
 # For repos that don't already have a richer bespoke CI. Repos with extra
 # required jobs (E2E, CodeQL, cross-platform) keep their own ci.yml and only
 # adopt nox-remediate.yml separately.
+#
+# This file lives in the org .github repo purely as a reference template,
+# so it is gated to workflow_dispatch only — the .github repo ships no
+# Node project, and auto-running js-ci.yml here fails at the dependency
+# cache step ("no package-lock.json"). When you COPY this into a real Node
+# repo, replace the `on:` block below with the push/pull_request triggers:
+#
+#   on:
+#     push:
+#       branches: [main]
+#       paths-ignore: ["**.md", "docs/**", "LICENSE", ".gitignore"]
+#     pull_request:
+#       branches: [main]
+#       paths-ignore: ["**.md", "docs/**", "LICENSE", ".gitignore"]
 name: CI
 
 on:
-  push:
-    branches: [main]
-    paths-ignore: ["**.md", "docs/**", "LICENSE", ".gitignore"]
-  pull_request:
-    branches: [main]
-    paths-ignore: ["**.md", "docs/**", "LICENSE", ".gitignore"]
+  workflow_dispatch: {}
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
