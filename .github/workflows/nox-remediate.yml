@@ -57,8 +57,15 @@ jobs:
           # The default GITHUB_TOKEN cannot push changes to .github/workflows/*
           # (GitHub blocks it without the `workflows` scope), and remediating
           # action pins edits workflow files. NOX_TOKEN (org/repo secret, flows in
-          # via `secrets: inherit`) is a PAT with that scope; falls back to
-          # GITHUB_TOKEN (fine for dependency-only remediation).
+          # via `secrets: inherit`) is a PAT with that scope.
+          #
+          # The GITHUB_TOKEN fallback is NOT sufficient for dependency-only
+          # remediation, as this comment used to claim. Opening the PR also fails
+          # under it unless "Allow GitHub Actions to create and approve pull
+          # requests" is enabled on the repo — and that setting additionally lets
+          # workflows approve PRs, which defeats a required-review rule. Prefer
+          # NOX_TOKEN. The PR step below reports precisely which of the two is
+          # missing rather than failing on a bare GraphQL error.
           token: ${{ secrets.NOX_TOKEN || github.token }}
           persist-credentials: true
 
@@ -99,6 +106,8 @@ jobs:
       - name: Open remediation PR if anything changed
         env:
           GH_TOKEN: ${{ secrets.NOX_TOKEN || github.token }}
+          # Presence only — the value is never echoed.
+          NOX_TOKEN_PRESENT: ${{ secrets.NOX_TOKEN != '' && 'yes' || '' }}
         run: |
           if git diff --quiet && git diff --cached --quiet; then
             echo "nox: nothing to remediate."
@@ -110,9 +119,27 @@ jobs:
           git switch -c "$branch"
           git commit -am "chore(security): nox remediation (deps + actions)"
           git push -u origin "$branch"
-          url="$(gh pr create \
+
+          # The branch is pushed before the PR is opened, so a failure here
+          # strands the remediation on a branch nobody is told about rather
+          # than losing it. roady accumulated one such branch for a week: the
+          # scheduled job had reported "failure" every Monday, and the only
+          # clue was a GraphQL error in the log of a job nobody watches.
+          if ! url="$(gh pr create \
             --title "chore(security): nox remediation" \
             --body "Automated remediation by \`nox fix --actions\`: OSV-vulnerable dependency upgrades plus outdated and mutable GitHub Actions pins bumped to their SHA-pinned latest release. Replaces dependabot." \
-            --label dependencies)"
+            --label dependencies 2>&1)"; then
+            echo "::error::Remediation is ready on branch '$branch' but the PR could not be opened."
+            echo "  gh said: $url"
+            if [ -z "${NOX_TOKEN_PRESENT}" ]; then
+              echo "  Cause: no NOX_TOKEN secret, so this ran as GITHUB_TOKEN, which may not create pull requests."
+              echo "  Fix:   add a NOX_TOKEN repo/org secret — a PAT with contents:write, pull-requests:write, workflows:write."
+            else
+              echo "  NOX_TOKEN is set, so this is not a missing-secret problem; check the token's scopes and expiry."
+            fi
+            echo "  Meanwhile the work is not lost — open it by hand:"
+            echo "  ${{ github.server_url }}/${{ github.repository }}/compare/$branch?expand=1"
+            exit 1
+          fi
           # Auto-merge once CI is green (same flow dependabot PRs used).
           gh pr merge --auto --squash "$url" || true
