@@ -125,21 +125,58 @@ jobs:
           # than losing it. roady accumulated one such branch for a week: the
           # scheduled job had reported "failure" every Monday, and the only
           # clue was a GraphQL error in the log of a job nobody watches.
-          if ! url="$(gh pr create \
-            --title "chore(security): nox remediation" \
-            --body "Automated remediation by \`nox fix --actions\`: OSV-vulnerable dependency upgrades plus outdated and mutable GitHub Actions pins bumped to their SHA-pinned latest release. Replaces dependabot." \
-            --label dependencies 2>&1)"; then
-            echo "::error::Remediation is ready on branch '$branch' but the PR could not be opened."
-            echo "  gh said: $url"
-            if [ -z "${NOX_TOKEN_PRESENT}" ]; then
-              echo "  Cause: no NOX_TOKEN secret, so this ran as GITHUB_TOKEN, which may not create pull requests."
-              echo "  Fix:   add a NOX_TOKEN repo/org secret — a PAT with contents:write, pull-requests:write, workflows:write."
+          body="Automated remediation by \`nox fix --actions\`: OSV-vulnerable dependency upgrades plus outdated and mutable GitHub Actions pins bumped to their SHA-pinned latest release. Replaces dependabot."
+
+          # The 'dependencies' label is cosmetic and must never cost us a
+          # security remediation. It went missing across the fleet when
+          # dependabot was removed — dependabot created it, nox inherited the
+          # dependency on it — and govee-light-management then failed every
+          # Monday from 2026-07-13 with "could not add label: not found",
+          # four weeks of remediation stranded on unreferenced branches.
+          #
+          # Labels are issues-scoped, so the default GITHUB_TOKEN (contents +
+          # pull-requests only) cannot create one. Try anyway for the
+          # NOX_TOKEN case, then fall back to an unlabelled PR. Broadening
+          # permissions to issues:write for a label would be the wrong trade
+          # in a security workflow.
+          gh label create dependencies --color 0366d6 \
+            --description "Pull requests that update a dependency file" \
+            >/dev/null 2>&1 || true
+
+          if ! url="$(gh pr create --title "chore(security): nox remediation" \
+            --body "$body" --label dependencies 2>&1)"; then
+            label_error="$url"
+            # gh validates labels before opening anything, so no PR exists yet
+            # and this retry cannot duplicate one. Guard regardless.
+            if existing="$(gh pr view "$branch" --json url --jq .url 2>/dev/null)" \
+               && [ -n "$existing" ]; then
+              url="$existing"
+            elif url="$(gh pr create --title "chore(security): nox remediation" \
+              --body "$body" 2>&1)"; then
+              echo "::warning::Opened without the 'dependencies' label."
+              echo "  gh said: $label_error"
+              echo "  Fix once per repo:  gh label create dependencies --color 0366d6 \\"
+              echo "                        --description 'Pull requests that update a dependency file'"
             else
-              echo "  NOX_TOKEN is set, so this is not a missing-secret problem; check the token's scopes and expiry."
+              echo "::error::Remediation is ready on branch '$branch' but the PR could not be opened."
+              echo "  gh said (with label):    $label_error"
+              echo "  gh said (without label): $url"
+              echo "  Possible causes, most specific first:"
+              echo "    - a branch protection or ruleset on the base branch rejecting the PR"
+              if [ -z "${NOX_TOKEN_PRESENT}" ]; then
+                echo "    - no NOX_TOKEN secret, so this ran as GITHUB_TOKEN, which may not be"
+                echo "      permitted to create pull requests in this repo's Actions settings."
+                echo "      Fix: add a NOX_TOKEN secret — a PAT with contents:write,"
+                echo "      pull-requests:write, workflows:write."
+              else
+                echo "    - NOX_TOKEN is set, so this is not a missing-secret problem;"
+                echo "      check the token's scopes and expiry."
+              fi
+              echo "  Read the two gh messages above before acting on any of these."
+              echo "  Meanwhile the work is not lost — open it by hand:"
+              echo "  ${{ github.server_url }}/${{ github.repository }}/compare/$branch?expand=1"
+              exit 1
             fi
-            echo "  Meanwhile the work is not lost — open it by hand:"
-            echo "  ${{ github.server_url }}/${{ github.repository }}/compare/$branch?expand=1"
-            exit 1
           fi
           # Auto-merge once CI is green (same flow dependabot PRs used).
           gh pr merge --auto --squash "$url" || true
