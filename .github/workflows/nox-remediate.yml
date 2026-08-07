@@ -179,4 +179,19 @@ jobs:
             fi
           fi
           # Auto-merge once CI is green (same flow dependabot PRs used).
-          gh pr merge --auto --squash "$url" || true
+          #
+          # Arming it can fail in ways that leave the PR open and unattended
+          # indefinitely: auto-merge disabled in repo settings, or a base
+          # branch with no required checks, leaving nothing for auto-merge to
+          # wait on. Both were swallowed by a bare `|| true` — which is how
+          # orbita accumulated four ready remediation PRs from Jul 13 onward
+          # that nobody was told about. A swallowed failure here parks
+          # security work forever; say so instead.
+          if ! merge_out="$(gh pr merge --auto --squash "$url" 2>&1)"; then
+            echo "::warning::Opened $url but could not arm auto-merge — it will wait for a human."
+            echo "  gh said: $merge_out"
+            echo "  Common causes:"
+            echo "    - auto-merge disabled: Settings > General > Allow auto-merge"
+            echo "    - base branch has no required checks, so there is nothing to wait on"
+            echo "    - a required review the bot cannot supply itself"
+          fi
