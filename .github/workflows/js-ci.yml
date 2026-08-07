@@ -145,26 +145,48 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
         run: nox annotate -input nox-results/findings.json || true
       - name: Gate on net-new critical/high findings
-        # Self-adjusting: report-only until the repo commits a nox baseline
-        # (or nox-strict is set), then gates net-new critical/high. Adopting
-        # the workflow never breaks a red build on day one.
+        # Report-only until the repo has adopted nox (or nox-strict is set),
+        # then gates net-new critical/high. The reasoning is inline below: the
+        # previous condition keyed on the baseline count and disarmed itself
+        # for any repo that waived findings cleanly.
         if: always() && hashFiles('nox-results/findings.json') != ''
         env:
           NOX_STRICT: ${{ inputs.nox-strict }}
+          WORKING_DIRECTORY: ${{ inputs.working-directory }}
         run: |
           f=nox-results/findings.json
-          baselined=$(jq '[.findings[]? | select(.Status=="baselined")] | length' "$f" 2>/dev/null || echo 0)
-          new=$(jq '[.findings[]? | select((.Severity=="critical" or .Severity=="high") and (.Status!="baselined"))] | length' "$f" 2>/dev/null || echo 0)
-          echo "net-new critical/high: $new (baselined findings: $baselined)"
-          if [ "$baselined" -eq 0 ] && [ "$NOX_STRICT" != "true" ]; then
-            echo "::notice::No nox baseline established — security gate is report-only. Run 'nox baseline add' and commit .nox/ to enforce net-new critical/high."
+          wd="${WORKING_DIRECTORY:-.}"
+
+          # A finding is live only when it carries no status at all. "baselined"
+          # and "suppressed" are both explicit waivers — one via .nox/baseline.json,
+          # the other via a nox:ignore directive at the site — and the gate has no
+          # business preferring one mechanism over the other. Treating anything not
+          # literally "baselined" as net-new meant an inline-waived critical failed
+          # the build while carrying a stated reason.
+          waived=$(jq '[.findings[]? | select(.Status=="baselined" or .Status=="suppressed")] | length' "$f" 2>/dev/null || echo 0)
+          new=$(jq '[.findings[]? | select((.Severity=="critical" or .Severity=="high") and ((.Status // "") == ""))] | length' "$f" 2>/dev/null || echo 0)
+          echo "net-new critical/high: $new (waived findings: $waived)"
+
+          # The report-only ramp exists so adopting this workflow cannot turn a red
+          # build red on day one. It keys on whether the repo has adopted nox, not
+          # on how many findings happen to be baselined: a repo that waives
+          # everything inline never accumulates baseline entries, so the old
+          # condition left it reporting forever. An off-switch that trips when you
+          # tidy up is not a gate.
+          adopted=false
+          if [ -f "${wd}/.nox.yaml" ] || [ -d "${wd}/.nox" ] || [ "$waived" -gt 0 ]; then
+            adopted=true
+          fi
+          if [ "$adopted" != "true" ] && [ "$NOX_STRICT" != "true" ]; then
+            echo "::notice::No nox configuration or baseline found — security gate is report-only. Commit a .nox.yaml (or run 'nox baseline add') to enforce net-new critical/high."
             exit 0
           fi
           if [ "$new" -gt 0 ]; then
-            echo "::error::Net-new critical/high findings. Run 'nox baseline add' or remediate."
-            jq '.findings[] | select((.Severity=="critical" or .Severity=="high") and (.Status!="baselined")) | {severity:.Severity, rule:.RuleID, file:.Location.FilePath, line:.Location.StartLine}' "$f"
+            echo "::error::Net-new critical/high findings. Remediate, waive at the site with a nox:ignore directive stating why, or run 'nox baseline add'."
+            jq '.findings[] | select((.Severity=="critical" or .Severity=="high") and ((.Status // "") == "")) | {severity:.Severity, rule:.RuleID, file:.Location.FilePath, line:.Location.StartLine}' "$f"
             exit 1
           fi
+
       - name: Upload nox artifacts
         if: always() && hashFiles('nox-results/**') != ''
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
