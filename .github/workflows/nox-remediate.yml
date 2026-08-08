@@ -187,6 +187,23 @@ jobs:
           # orbita accumulated four ready remediation PRs from Jul 13 onward
           # that nobody was told about. A swallowed failure here parks
           # security work forever; say so instead.
+          # $url was captured with 2>&1 so a failure message could be reported,
+          # which also means a *successful* create brings gh's warnings along
+          # with it. felixgeelhaar/specular hit this immediately:
+          #
+          #   gh said: invalid qualified head ref format 'Warning: 2 uncommitted
+          #   changes\nhttps://github.com/felixgeelhaar/specular/pull/46'
+          #
+          # so every PR opened since that capture was introduced has failed to
+          # arm auto-merge and waited for a human — the exact outcome the
+          # reporting above exists to prevent. Extract the URL rather than
+          # trusting the whole captured blob to be one.
+          url="$(printf '%s\n' "$url" | grep -oE 'https://[^[:space:]]+/pull/[0-9]+' | tail -1)"
+          if [ -z "$url" ]; then
+            echo "::error::PR was created but its URL could not be parsed from gh's output; cannot arm auto-merge."
+            exit 1
+          fi
+
           if ! merge_out="$(gh pr merge --auto --squash "$url" 2>&1)"; then
             echo "::warning::Opened $url but could not arm auto-merge — it will wait for a human."
             echo "  gh said: $merge_out"
