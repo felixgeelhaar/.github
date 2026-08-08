@@ -25,11 +25,11 @@ on:
       nox-version:
         description: "nox release version (no leading v)."
         type: string
-        default: "1.7.1"
+        default: "1.27.0"
       nox-sha256:
         description: "sha256 of nox_<version>_linux_amd64.tar.gz (verify on bump)."
         type: string
-        default: "3106ab3ce7197f43a45fc1128ea27112686421e8ec3eac9be356d4ca42ab4c89"
+        default: "02a6f01575ab959ab971528bdef7d6e0a4c9a7b5c70298b802f1031c77304c5a"
       include-major:
         description: "Allow major-version action bumps (off by default; majors are surfaced but held)."
         type: boolean
@@ -94,14 +94,34 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.NOX_TOKEN || secrets.GITHUB_TOKEN }}
           INCLUDE_MAJOR: ${{ inputs.include-major }}
         run: |
-          nox scan . -format json -output . || true
+          # Scan output goes to RUNNER_TEMP, never the working tree. `-output .`
+          # writes findings.json / ai.inventory.json into the repo root, and the
+          # `git commit -am` below stages every tracked modification — so once
+          # such a file has been committed once, every later run re-commits it.
+          out="${RUNNER_TEMP}/nox-scan"
+          mkdir -p "$out"
+          nox scan . -format json -output "$out" || true
           # --actions bumps outdated action pins AND SHA-pins mutable tag refs;
           # the deps pass upgrades any OSV-vulnerable go/npm/pypi/cargo package
           # with a fixed_in version. Default nox fix behaviour is unchanged.
           major=""
           [ "$INCLUDE_MAJOR" = "true" ] && major="--include-major"
-          nox fix --actions $major --input findings.json --root . || true
+          nox fix --actions $major --input "$out/findings.json" --root . || true
+
+          # Record whether `nox fix` itself changed anything, BEFORE the tidy
+          # pass runs. `go mod tidy` is not remediation — it moves requirements
+          # between the direct and indirect blocks and fills in missing go.sum
+          # lines — but the PR step below could not tell the two apart, so a
+          # tidy-only diff was committed as "chore(security): nox remediation"
+          # with a body claiming OSV upgrades and action-pin bumps.
+          empty="$(printf '' | sha256sum | cut -d' ' -f1)"
+          after_fix="$(git diff HEAD | sha256sum | cut -d' ' -f1)"
+          [ "$after_fix" != "$empty" ] && echo "remediated=true" >> "$GITHUB_ENV" || echo "remediated=false" >> "$GITHUB_ENV"
+
           [ -f go.mod ] && go mod tidy || true
+
+          after_tidy="$(git diff HEAD | sha256sum | cut -d' ' -f1)"
+          [ "$after_tidy" != "$after_fix" ] && echo "tidied=true" >> "$GITHUB_ENV" || echo "tidied=false" >> "$GITHUB_ENV"
 
       - name: Open remediation PR if anything changed
         env:
@@ -113,11 +133,22 @@ jobs:
             echo "nox: nothing to remediate."
             exit 0
           fi
+          # Say what actually happened. `remediated` and `tidied` are set by the
+          # step above from the diff before and after `go mod tidy`, so a
+          # tidy-only run no longer wears a security title it did not earn.
+          tidy_note=""
+          [ "$tidied" = "true" ] && tidy_note=" \`go mod tidy\` also ran and adjusted go.mod/go.sum."
+          if [ "$remediated" = "true" ]; then
+            title="chore(security): nox remediation (deps + actions)"
+          else
+            title="chore(deps): go mod tidy"
+          fi
+
           branch="nox/remediate-${{ github.run_id }}"
           git config user.name "nox-remediate"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git switch -c "$branch"
-          git commit -am "chore(security): nox remediation (deps + actions)"
+          git commit -am "$title"
           git push -u origin "$branch"
 
           # The branch is pushed before the PR is opened, so a failure here
@@ -125,7 +156,13 @@ jobs:
           # than losing it. roady accumulated one such branch for a week: the
           # scheduled job had reported "failure" every Monday, and the only
           # clue was a GraphQL error in the log of a job nobody watches.
-          body="Automated remediation by \`nox fix --actions\`: OSV-vulnerable dependency upgrades plus outdated and mutable GitHub Actions pins bumped to their SHA-pinned latest release. Replaces dependabot."
+          if [ "$remediated" = "true" ]; then
+            body="Automated remediation by \`nox fix --actions\`: OSV-vulnerable dependency upgrades plus outdated and mutable GitHub Actions pins bumped to their SHA-pinned latest release. Replaces dependabot.${tidy_note}"
+          else
+            body="$(printf '%s\n\n%s' \
+              '`nox fix` found nothing to remediate — **no vulnerability is being fixed here, and no action pin changed.** What the diff contains is `go mod tidy`: requirements moving between the direct and indirect blocks, and missing go.sum lines filled in. The branch was simply not tidy.' \
+              'The honest title is deliberate. This run would previously have been titled `chore(security): nox remediation` with a body claiming OSV upgrades, because the workflow could not tell its own remediation apart from the tidy pass that follows it.')"
+          fi
 
           # The 'dependencies' label is cosmetic and must never cost us a
           # security remediation. It went missing across the fleet when
@@ -143,7 +180,7 @@ jobs:
             --description "Pull requests that update a dependency file" \
             >/dev/null 2>&1 || true
 
-          if ! url="$(gh pr create --title "chore(security): nox remediation" \
+          if ! url="$(gh pr create --title "$title" \
             --body "$body" --label dependencies 2>&1)"; then
             label_error="$url"
             # gh validates labels before opening anything, so no PR exists yet
@@ -151,7 +188,7 @@ jobs:
             if existing="$(gh pr view "$branch" --json url --jq .url 2>/dev/null)" \
                && [ -n "$existing" ]; then
               url="$existing"
-            elif url="$(gh pr create --title "chore(security): nox remediation" \
+            elif url="$(gh pr create --title "$title" \
               --body "$body" 2>&1)"; then
               echo "::warning::Opened without the 'dependencies' label."
               echo "  gh said: $label_error"
