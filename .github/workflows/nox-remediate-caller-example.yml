@@ -16,3 +16,10 @@ jobs:
   remediate:
     uses: felixgeelhaar/.github/.github/workflows/nox-remediate.yml@main
     secrets: inherit # pass NOX_TOKEN through if the repo/org defines one
+    # with:
+    #   # Also upgrade dependencies that are merely out of date, not just the
+    #   # vulnerable ones. Off by default: it reaches the network, and routine
+    #   # churn carries its own risk of breaking a build. A run that only
+    #   # freshens is titled `chore(deps): dependency currency pass`, never a
+    #   # security remediation.
+    #   include-outdated: true

@@ -34,6 +34,10 @@ on:
         description: "Allow major-version action bumps (off by default; majors are surfaced but held)."
         type: boolean
         default: false
+      include-outdated:
+        description: "Also run the currency pass (`nox fix --outdated`): upgrade direct dependencies that are merely out of date, not just the vulnerable ones. Off by default — it reaches the network and is routine churn, not a security fix."
+        type: boolean
+        default: false
     secrets:
       NOX_TOKEN:
         description: "PAT with contents+pull-requests+workflows write. Required to push remediation of .github/workflows/* (the default GITHUB_TOKEN can't). Falls back to GITHUB_TOKEN for dependency-only remediation."
@@ -93,6 +97,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.NOX_TOKEN || secrets.GITHUB_TOKEN }}
           INCLUDE_MAJOR: ${{ inputs.include-major }}
+          INCLUDE_OUTDATED: ${{ inputs.include-outdated }}
         run: |
           # Scan output goes to RUNNER_TEMP, never the working tree. `-output .`
           # writes findings.json / ai.inventory.json into the repo root, and the
@@ -118,10 +123,34 @@ jobs:
           after_fix="$(git diff HEAD | sha256sum | cut -d' ' -f1)"
           [ "$after_fix" != "$empty" ] && echo "remediated=true" >> "$GITHUB_ENV" || echo "remediated=false" >> "$GITHUB_ENV"
 
+          # Currency pass, opt-in. Runs AFTER `remediated` is recorded, so a
+          # routine version bump can never be reported as a security fix —
+          # the same reason the tidy pass below is measured separately.
+          #
+          # nox resolves latest-stable from each ecosystem's own registry
+          # (go, npm, pypi, cargo, rubygems, composer, nuget) and applies the
+          # upgrade with that ecosystem's tool. Majors are held unless
+          # --include-major, and counted so the PR can say what is waiting.
+          if [ "$INCLUDE_OUTDATED" = "true" ]; then
+            nox fix --outdated $major --root . > "${RUNNER_TEMP}/outdated.txt" 2>&1 || true
+            cat "${RUNNER_TEMP}/outdated.txt"
+            {
+              echo "outdated_summary<<NOX_EOF"
+              # The held-majors note and any `degraded:` line are the two
+              # things a reader needs; the rest is per-package detail already
+              # visible in the diff.
+              grep -E "major-bump|degraded:|are current" "${RUNNER_TEMP}/outdated.txt" || true
+              echo "NOX_EOF"
+            } >> "$GITHUB_ENV"
+          fi
+
+          after_outdated="$(git diff HEAD | sha256sum | cut -d' ' -f1)"
+          [ "$after_outdated" != "$after_fix" ] && echo "freshened=true" >> "$GITHUB_ENV" || echo "freshened=false" >> "$GITHUB_ENV"
+
           [ -f go.mod ] && go mod tidy || true
 
           after_tidy="$(git diff HEAD | sha256sum | cut -d' ' -f1)"
-          [ "$after_tidy" != "$after_fix" ] && echo "tidied=true" >> "$GITHUB_ENV" || echo "tidied=false" >> "$GITHUB_ENV"
+          [ "$after_tidy" != "$after_outdated" ] && echo "tidied=true" >> "$GITHUB_ENV" || echo "tidied=false" >> "$GITHUB_ENV"
 
       - name: Open remediation PR if anything changed
         env:
@@ -133,13 +162,18 @@ jobs:
             echo "nox: nothing to remediate."
             exit 0
           fi
-          # Say what actually happened. `remediated` and `tidied` are set by the
-          # step above from the diff before and after `go mod tidy`, so a
-          # tidy-only run no longer wears a security title it did not earn.
+          # Say what actually happened. `remediated`, `freshened` and `tidied`
+          # are each measured from the diff before and after their own pass, so
+          # no run wears a security title it did not earn — and equally, a
+          # currency bump is never hidden inside one.
           tidy_note=""
           [ "$tidied" = "true" ] && tidy_note=" \`go mod tidy\` also ran and adjusted go.mod/go.sum."
+          fresh_note=""
+          [ "$freshened" = "true" ] && fresh_note=" The currency pass (\`nox fix --outdated\`) also upgraded direct dependencies that were merely out of date."
           if [ "$remediated" = "true" ]; then
             title="chore(security): nox remediation (deps + actions)"
+          elif [ "$freshened" = "true" ]; then
+            title="chore(deps): dependency currency pass"
           else
             title="chore(deps): go mod tidy"
           fi
@@ -157,7 +191,12 @@ jobs:
           # scheduled job had reported "failure" every Monday, and the only
           # clue was a GraphQL error in the log of a job nobody watches.
           if [ "$remediated" = "true" ]; then
-            body="Automated remediation by \`nox fix --actions\`: OSV-vulnerable dependency upgrades plus outdated and mutable GitHub Actions pins bumped to their SHA-pinned latest release. Replaces dependabot.${tidy_note}"
+            body="Automated remediation by \`nox fix --actions\`: OSV-vulnerable dependency upgrades plus outdated and mutable GitHub Actions pins bumped to their SHA-pinned latest release. Replaces dependabot.${fresh_note}${tidy_note}"
+          elif [ "$freshened" = "true" ]; then
+            body="$(printf '%s\n\n%s\n\n%s' \
+              '`nox fix` found nothing to remediate — **no vulnerability is being fixed here, and no action pin changed.** What the diff contains is the opt-in currency pass: direct dependencies that were merely out of date, resolved to their latest STABLE release from each ecosystem'"'"'s own registry and applied with that ecosystem'"'"'s own tool.' \
+              "${outdated_summary:-}" \
+              'Routine version churn carries its own risk of breaking a build, which is why it is a separate title from a security remediation and why majors are held unless the caller asks for them.')${tidy_note}"
           else
             body="$(printf '%s\n\n%s' \
               '`nox fix` found nothing to remediate — **no vulnerability is being fixed here, and no action pin changed.** What the diff contains is `go mod tidy`: requirements moving between the direct and indirect blocks, and missing go.sum lines filled in. The branch was simply not tidy.' \
