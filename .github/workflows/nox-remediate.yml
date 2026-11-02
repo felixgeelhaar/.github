@@ -55,6 +55,27 @@ jobs:
   remediate:
     runs-on: ubuntu-latest
     steps:
+      # A set-but-invalid NOX_TOKEN (typically an expired PAT) is used as-is by
+      # checkout, which then fails with the cryptic "could not read Username".
+      # Probe it first so the failure names the cause and the fix.
+      - name: Verify NOX_TOKEN
+        env:
+          NOX_TOKEN: ${{ secrets.NOX_TOKEN }}
+        run: |
+          if [ -z "${NOX_TOKEN}" ]; then
+            echo "NOX_TOKEN not set; falling back to GITHUB_TOKEN."
+            exit 0
+          fi
+          status=$(curl -s -o /dev/null -w '%{http_code}' \
+            -H "Authorization: Bearer ${NOX_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            https://api.github.com/repos/${{ github.repository }})
+          if [ "${status}" = "401" ] || [ "${status}" = "403" ] || [ "${status}" = "404" ]; then
+            echo "::error title=NOX_TOKEN rejected::GitHub answered HTTP ${status} for NOX_TOKEN. The PAT is most likely expired or lacks access to ${{ github.repository }}. Create a new PAT (contents, pull-requests, workflows write) and run: gh secret set NOX_TOKEN -R ${{ github.repository }}"
+            exit 1
+          fi
+          echo "NOX_TOKEN accepted (HTTP ${status})."
+
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           fetch-depth: 0
