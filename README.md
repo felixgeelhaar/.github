@@ -33,13 +33,15 @@ Caller templates: [`nox-remediate-caller-example.yml`](.github/workflows/nox-rem
    and delete `.github/dependabot.yml` + any dependabot auto-merge workflow.
 2. **CI**: repos without bespoke CI copy `js-ci-caller-example.yml` to
    `.github/workflows/ci.yml`. Repos with richer required checks (E2E, CodeQL,
-   cross-platform) keep their own `ci.yml` and just make their nox scan step
-   blocking with the baseline gate.
+   cross-platform) keep their own `ci.yml` but run no nox step of their own:
+   add the shared scan as a separate workflow, copied from
+   klarlabs-studio/.github's `workflow-templates/nox.yml`.
 3. **Local gate**: `warden init` and commit `.warden.yaml`.
 
 ## Pinned tool versions
 
-- **nox** `1.7.1` (`sha256 3106ab3ce7197f43a45fc1128ea27112686421e8ec3eac9be356d4ca42ab4c89`)
-
-Bump in the reusable workflow inputs; verify the sha256 of
-`nox_<version>_linux_amd64.tar.gz` on every bump.
+- **nox**: the scan in `go-ci` and `js-ci` runs
+  [klarlabs-studio/.github's `nox.yml`](https://github.com/klarlabs-studio/.github/blob/main/.github/workflows/nox.yml),
+  whose pin that repo's `scripts/nox-pin.sh` keeps current for the whole fleet.
+  Never pin nox in a caller. `nox-remediate.yml` here still carries its own pin
+  (1.63.0); bump it with the same signed checksum.

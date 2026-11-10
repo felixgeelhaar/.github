@@ -34,12 +34,6 @@ on:
         description: "Path to the package when it is NOT at the repo root (monorepos)."
         type: string
         default: "."
-      nox-version:
-        type: string
-        default: "1.7.1"
-      nox-sha256:
-        type: string
-        default: "3106ab3ce7197f43a45fc1128ea27112686421e8ec3eac9be356d4ca42ab4c89"
       nox-strict:
         description: "Fail on net-new critical/high even before a baseline exists."
         type: boolean
@@ -113,84 +107,16 @@ jobs:
         if: inputs.run-build && steps.scripts.outputs.build == 'true'
         run: ${{ inputs.package-manager }} run build
 
+  # The scan, gate and nox pin live in ONE place for the whole fleet:
+  # klarlabs-studio/.github's nox.yml, kept current by its nox-pin.sh. This
+  # copy used to pin its own nox and drifted to 1.7.1.
   security:
     name: Security (nox)
-    runs-on: ubuntu-latest
     permissions:
       contents: read
       security-events: write
       pull-requests: write   # nox annotate
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-      - name: Install nox (pinned + sha256-verified binary)
-        env:
-          NOX_VERSION: ${{ inputs.nox-version }}
-          NOX_SHA256: ${{ inputs.nox-sha256 }}
-        run: |
-          curl -sL -o nox.tar.gz \
-            "https://github.com/nox-hq/nox/releases/download/v${NOX_VERSION}/nox_${NOX_VERSION}_linux_amd64.tar.gz"
-          echo "${NOX_SHA256}  nox.tar.gz" | sha256sum -c -
-          tar xzf nox.tar.gz && sudo mv nox /usr/local/bin/ && nox version
-      - name: Scan
-        # nox core covers JS/TS dependency CVEs (OSV), secrets, and IaC.
-        run: nox scan ${{ inputs.working-directory }} -format json,sarif -output nox-results || true
-      - name: Upload SARIF to code scanning
-        if: always() && hashFiles('nox-results/results.sarif') != ''
-        uses: github/codeql-action/upload-sarif@7211b7c8077ea37d8641b6271f6a365a22a5fbfa # v4
-        with:
-          sarif_file: nox-results/results.sarif
-      - name: Annotate PR
-        if: github.event_name == 'pull_request' && hashFiles('nox-results/findings.json') != ''
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-        run: nox annotate -input nox-results/findings.json || true
-      - name: Gate on net-new critical/high findings
-        # Report-only until the repo has adopted nox (or nox-strict is set),
-        # then gates net-new critical/high. The reasoning is inline below: the
-        # previous condition keyed on the baseline count and disarmed itself
-        # for any repo that waived findings cleanly.
-        if: always() && hashFiles('nox-results/findings.json') != ''
-        env:
-          NOX_STRICT: ${{ inputs.nox-strict }}
-          WORKING_DIRECTORY: ${{ inputs.working-directory }}
-        run: |
-          f=nox-results/findings.json
-          wd="${WORKING_DIRECTORY:-.}"
-
-          # A finding is live only when it carries no status at all. "baselined"
-          # and "suppressed" are both explicit waivers — one via .nox/baseline.json,
-          # the other via a nox:ignore directive at the site — and the gate has no
-          # business preferring one mechanism over the other. Treating anything not
-          # literally "baselined" as net-new meant an inline-waived critical failed
-          # the build while carrying a stated reason.
-          waived=$(jq '[.findings[]? | select(.Status=="baselined" or .Status=="suppressed")] | length' "$f" 2>/dev/null || echo 0)
-          new=$(jq '[.findings[]? | select((.Severity=="critical" or .Severity=="high") and ((.Status // "") == ""))] | length' "$f" 2>/dev/null || echo 0)
-          echo "net-new critical/high: $new (waived findings: $waived)"
-
-          # The report-only ramp exists so adopting this workflow cannot turn a red
-          # build red on day one. It keys on whether the repo has adopted nox, not
-          # on how many findings happen to be baselined: a repo that waives
-          # everything inline never accumulates baseline entries, so the old
-          # condition left it reporting forever. An off-switch that trips when you
-          # tidy up is not a gate.
-          adopted=false
-          if [ -f "${wd}/.nox.yaml" ] || [ -d "${wd}/.nox" ] || [ "$waived" -gt 0 ]; then
-            adopted=true
-          fi
-          if [ "$adopted" != "true" ] && [ "$NOX_STRICT" != "true" ]; then
-            echo "::notice::No nox configuration or baseline found — security gate is report-only. Commit a .nox.yaml (or run 'nox baseline add') to enforce net-new critical/high."
-            exit 0
-          fi
-          if [ "$new" -gt 0 ]; then
-            echo "::error::Net-new critical/high findings. Remediate, waive at the site with a nox:ignore directive stating why, or run 'nox baseline add'."
-            jq '.findings[] | select((.Severity=="critical" or .Severity=="high") and ((.Status // "") == "")) | {severity:.Severity, rule:.RuleID, file:.Location.FilePath, line:.Location.StartLine}' "$f"
-            exit 1
-          fi
-
-      - name: Upload nox artifacts
-        if: always() && hashFiles('nox-results/**') != ''
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: nox-results
-          path: nox-results/
-          retention-days: 7
+    uses: klarlabs-studio/.github/.github/workflows/nox.yml@main
+    with:
+      working-directory: ${{ inputs.working-directory }}
+      nox-strict: ${{ inputs.nox-strict }}
