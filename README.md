@@ -39,7 +39,8 @@ Caller templates: [`nox-remediate-caller-example.yml`](.github/workflows/nox-rem
 
 ## Pinned tool versions
 
-- **nox** `1.7.1` (`sha256 3106ab3ce7197f43a45fc1128ea27112686421e8ec3eac9be356d4ca42ab4c89`)
-
-Bump in the reusable workflow inputs; verify the sha256 of
-`nox_<version>_linux_amd64.tar.gz` on every bump.
+- **nox**: the scan in `go-ci` and `js-ci` runs
+  [klarlabs-studio/.github's `nox.yml`](https://github.com/klarlabs-studio/.github/blob/main/.github/workflows/nox.yml),
+  whose pin that repo's `scripts/nox-pin.sh` keeps current for the whole fleet.
+  Never pin nox in a caller. `nox-remediate.yml` here still carries its own pin
+  (1.63.0); bump it with the same signed checksum.
