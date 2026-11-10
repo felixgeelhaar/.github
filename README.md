@@ -33,8 +33,9 @@ Caller templates: [`nox-remediate-caller-example.yml`](.github/workflows/nox-rem
    and delete `.github/dependabot.yml` + any dependabot auto-merge workflow.
 2. **CI**: repos without bespoke CI copy `js-ci-caller-example.yml` to
    `.github/workflows/ci.yml`. Repos with richer required checks (E2E, CodeQL,
-   cross-platform) keep their own `ci.yml` and just make their nox scan step
-   blocking with the baseline gate.
+   cross-platform) keep their own `ci.yml` but run no nox step of their own:
+   add the shared scan as a separate workflow, copied from
+   klarlabs-studio/.github's `workflow-templates/nox.yml`.
 3. **Local gate**: `warden init` and commit `.warden.yaml`.
 
 ## Pinned tool versions
