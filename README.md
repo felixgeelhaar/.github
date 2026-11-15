@@ -1,5 +1,7 @@
 # felixgeelhaar/.github
 
+[![nox security grade](.github/nox-badge.svg)](.github/workflows/nox-remediate.yml)
+
 Central, reusable GitHub Actions workflows and org defaults for the
 `felixgeelhaar` OSS repositories. Bump a pinned tool/action version **here
 once** and every caller repo picks it up.
